@@ -1,5 +1,11 @@
-use std::{fs, path::Path};
-use zed_extension_api::{self as zed, serde_json, settings::LspSettings, LanguageServerId, Result};
+use std::{fmt::Write, fs, path::Path};
+use zed_extension_api::{
+    self as zed,
+    lsp::{self, Completion},
+    serde_json,
+    settings::LspSettings,
+    CodeLabel, CodeLabelSpan, LanguageServerId, Result,
+};
 
 const ZIG_TEST_EXE_BASENAME: &str = "zig_test";
 
@@ -50,7 +56,7 @@ impl ZigExtension {
         }
 
         if let Some(path) = &self.cached_binary_path {
-            if fs::metadata(path).map_or(false, |stat| stat.is_file()) {
+            if fs::metadata(path).is_ok_and(|stat| stat.is_file()) {
                 return Ok(ZlsBinary {
                     path: path.clone(),
                     args,
@@ -100,7 +106,7 @@ impl ZigExtension {
             zed::Os::Windows => format!("{version_dir}/zls.exe"),
         };
 
-        if !fs::metadata(&binary_path).map_or(false, |stat| stat.is_file()) {
+        if !fs::metadata(&binary_path).is_ok_and(|stat| stat.is_file()) {
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
@@ -230,7 +236,7 @@ impl zed::Extension for ZigExtension {
             build: Some(zed::BuildTaskDefinition::Template(
                 zed::BuildTaskDefinitionTemplatePayload {
                     template,
-                    locator_name: Some(locator_name.into()),
+                    locator_name: Some(locator_name),
                 },
             )),
         })
@@ -284,6 +290,142 @@ impl zed::Extension for ZigExtension {
             _ => Err("Unsupported build task".into()),
         }
     }
+
+    fn label_for_completion(
+        &self,
+        _language_server_id: &LanguageServerId,
+        completion: Completion,
+    ) -> Option<CodeLabel> {
+        let highlight_name = match completion.kind {
+            Some(lsp::CompletionKind::Text) => Some("label"),
+            Some(lsp::CompletionKind::Constant) => Some("constant"),
+            Some(lsp::CompletionKind::Variable) => Some("variable"),
+            Some(lsp::CompletionKind::Field) | Some(lsp::CompletionKind::EnumMember) => {
+                Some("property")
+            }
+            kind @ Some(
+                lsp::CompletionKind::Function
+                | lsp::CompletionKind::Method
+                | lsp::CompletionKind::Other(420),
+            ) => {
+                let is_builtin = matches!(kind, Some(lsp::CompletionKind::Other(_)));
+                let mut code = String::new();
+                code.write_str(&completion.label).unwrap();
+                completion.label_details.map(|ld| {
+                    code.write_str(&ld.detail.unwrap_or_default()).unwrap();
+                    ld.description.map(|detail| write!(code, " -> {}", &detail))
+                });
+                return Some(CodeLabel {
+                    spans: vec![
+                        CodeLabelSpan::literal(
+                            code[0..completion.label.len()].to_owned(),
+                            Some(
+                                if is_builtin {
+                                    "function.builtin"
+                                } else {
+                                    "function"
+                                }
+                                .to_owned(),
+                            ),
+                        ),
+                        CodeLabelSpan::code_range(completion.label.len()..code.len()),
+                    ],
+                    code,
+                    filter_range: (0..completion.label.len()).into(),
+                });
+            }
+            Some(lsp::CompletionKind::Keyword) => Some("keyword"),
+            Some(lsp::CompletionKind::Snippet) => {
+                let code = format!("{}~", completion.label);
+                return Some(CodeLabel {
+                    spans: vec![
+                        CodeLabelSpan::literal(
+                            code[0..completion.label.len()].to_owned(),
+                            Some("snippet".to_owned()),
+                        ),
+                        CodeLabelSpan::literal("~", None),
+                    ],
+                    filter_range: (0..code.len()).into(),
+                    code,
+                });
+            }
+            Some(lsp::CompletionKind::Operator) => Some("operator"),
+            Some(
+                lsp::CompletionKind::Enum
+                | lsp::CompletionKind::Struct
+                | lsp::CompletionKind::TypeParameter,
+            ) => Some("type"),
+            Some(
+                lsp::CompletionKind::Module
+                | lsp::CompletionKind::File
+                | lsp::CompletionKind::Folder,
+            ) => {
+                return Some(CodeLabel {
+                    spans: vec![
+                        CodeLabelSpan::literal(&completion.label, Some("type".to_owned())),
+                        CodeLabelSpan::literal(" ", None),
+                        CodeLabelSpan::literal(completion.detail.unwrap_or_default(), None),
+                    ],
+                    filter_range: (0..completion.label.len()).into(),
+                    code: completion.label,
+                });
+            }
+            _ => None,
+        };
+        let include_type = matches!(completion.detail, Some(ref s) if s != "type" && !s.is_empty());
+        let code = if include_type {
+            format!(
+                "{}: {}",
+                completion.label,
+                completion.detail.unwrap_or_default()
+            )
+        } else {
+            completion.label.to_owned()
+        };
+        let mut spans = vec![CodeLabelSpan::literal(
+            code[0..completion.label.len()].to_owned(),
+            highlight_name.map(|s| s.to_owned()),
+        )];
+        if include_type {
+            spans.push(CodeLabelSpan::code_range(
+                completion.label.len()..code.len(),
+            ));
+        }
+        Some(CodeLabel {
+            spans,
+            code,
+            filter_range: (0..completion.label.len()).into(),
+        })
+    }
+
+    fn label_for_symbol(
+        &self,
+        _language_server_id: &LanguageServerId,
+        symbol: lsp::Symbol,
+    ) -> Option<CodeLabel> {
+        let (prefix, highlight_name) = match symbol.kind {
+            lsp::SymbolKind::Function => ("fn ", Some("function")),
+            // ZLS uses Method for tests as theres no symbolkind for tests
+            lsp::SymbolKind::Method => ("test ", None),
+            lsp::SymbolKind::Constant => ("const ", Some("variable")),
+            lsp::SymbolKind::Variable => ("var ", Some("variable")),
+            lsp::SymbolKind::Field => ("", Some("property")),
+            _ => return None,
+        };
+        let code = format!("{}{}", prefix, symbol.name);
+        let len = code.len();
+        Some(CodeLabel {
+            spans: vec![
+                CodeLabelSpan::code_range(0..prefix.len()),
+                CodeLabelSpan::literal(
+                    code[prefix.len()..].to_owned(),
+                    highlight_name.map(|s| s.to_owned()),
+                ),
+            ],
+            code,
+            filter_range: (prefix.len()..len).into(),
+        })
+    }
 }
 
 fn get_project_name(task: &zed::TaskTemplate) -> Option<String> {
@@ -294,11 +436,7 @@ fn get_project_name(task: &zed::TaskTemplate) -> Option<String> {
 
 fn get_test_exe_path() -> Option<String> {
     let test_exe_dir = std::env::current_dir().ok()?;
-    let mut name = format!(
-        "{}_{}",
-        ZIG_TEST_EXE_BASENAME,
-        uuid::Uuid::new_v4().to_string()
-    );
+    let mut name = format!("{}_{}", ZIG_TEST_EXE_BASENAME, uuid::Uuid::new_v4());
     if zed::current_platform().0 == zed::Os::Windows {
         name.push_str(".exe");
     }

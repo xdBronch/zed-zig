@@ -13,7 +13,7 @@
   type: (identifier) @type)
 
 ((identifier) @type
-  (#match? @type "^[A-Z_][a-zA-Z0-9_]*"))
+  (#match? @type "^[A-Z][a-zA-Z0-9_]*"))
 
 (variable_declaration
   (identifier) @type
@@ -32,9 +32,6 @@
 
 ; Constants
 
-((identifier) @constant
-  (#match? @constant "^[A-Z][A-Z_0-9]+$"))
-
 [
   "null"
   "unreachable"
@@ -43,11 +40,11 @@
 
 (field_expression
   .
-  member: (identifier) @constant)
+  member: (identifier) @property)
 
-(enum_declaration
-  (container_field
-    type: (identifier) @constant))
+; (enum_declaration
+;   (enum_union_field
+;     name: (_) @constant))
 
 ; Labels
 
@@ -65,12 +62,13 @@
   (_)
   member: (identifier) @property)
 
-(field_expression
-  (_)
-  member: (identifier) @type (#match? @type "^[A-Z_][a-zA-Z0-9_]*"))
-
 (container_field
-  name: (identifier) @property)
+  name: (_)? @property
+  type: (_) @type)
+
+(enum_union_field
+  name: (identifier) @property
+  type: (_)? @type)
 
 (initializer_list
   (assignment_expression
@@ -92,13 +90,20 @@
 (function_declaration
   name: (identifier) @function)
 
-; Modules
+(function_declaration
+  name: (identifier) @type
+  type: (_) @type.return
+  (#eq? @type.return "type"))
+  ; (#match? @type "^[A-Z][a-zA-Z0-9_]*"))
 
-(variable_declaration
-  (identifier) @module
-  (builtin_function
-    (builtin_identifier) @keyword.import
-    (#any-of? @keyword.import "@import" "@cImport")))
+(call_expression
+  function: (identifier) @type
+  (#match? @type "^[A-Z][a-zA-Z0-9_]*"))
+
+(field_expression
+  (_)
+  member: (identifier) @type (#match? @type "^[A-Z][a-zA-Z0-9_]*"))
+; Modules
 
 ; Builtins
 
@@ -123,57 +128,27 @@
   "error"
   "const"
   "var"
-] @keyword
-
-[
   "struct"
   "union"
   "enum"
   "opaque"
-] @keyword.type
-
-[
-  "async"
-  "await"
   "suspend"
   "nosuspend"
   "resume"
-] @keyword.coroutine
-
-"fn" @keyword.function
-
-[
   "and"
   "or"
   "orelse"
-] @keyword.operator
-
-"return" @keyword.return
-
-[
   "if"
   "else"
   "switch"
-] @keyword.conditional
-
-[
   "for"
   "while"
   "break"
   "continue"
-] @keyword.repeat
-
-[
   "usingnamespace"
   "export"
-] @keyword.import
-
-[
   "try"
   "catch"
-] @keyword.exception
-
-[
   "volatile"
   "allowzero"
   "noalias"
@@ -188,7 +163,37 @@
   "comptime"
   "packed"
   "threadlocal"
-] @keyword.modifier
+  "fn"
+  "return"
+] @keyword
+
+; [
+; ] @keyword.type
+;
+; [
+; ] @keyword.coroutine
+;
+; "fn" @keyword.function
+;
+; [
+; ] @keyword.operator
+;
+; "return" @keyword.return
+;
+; [
+; ] @keyword.conditional
+;
+; [
+; ] @keyword.repeat
+;
+; [
+; ] @keyword.import
+;
+; [
+; ] @keyword.exception
+;
+; [
+; ] @keyword.modifier
 
 ; Operator
 
@@ -245,6 +250,9 @@
   ".?"
   "?"
   ".."
+  "..."
+  "=>"
+  "->"
 ] @operator
 
 ; Literals
@@ -254,8 +262,7 @@
 ([
   (string)
   (multiline_string)
-] @string
-  (#set! "priority" 95))
+] @string)
 
 (integer) @number
 
@@ -281,15 +288,19 @@
   "."
   ","
   ":"
-  "=>"
-  "->"
 ] @punctuation.delimiter
 
-(payload "|" @punctuation.bracket)
+; (payload "|" @punctuation.bracket)
 
 ; Comments
 
 (comment) @comment
 
-((comment) @comment.documentation
-  (#match? @comment.documentation "^//(/|!)"))
+; ((comment) @comment.documentation
+;   (#match? @comment.documentation "^//(/|!)"))
+
+(ERROR) @constant
+(ERROR) @constructor
+(ERROR) @function.method
+(ERROR) @snippet
+(ERROR) @method
